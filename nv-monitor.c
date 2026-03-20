@@ -110,6 +110,7 @@ static int    history_count = 0;
 
 static volatile sig_atomic_t g_quit = 0;
 static int sort_mode = 0; /* 0=by mem, 1=by pid */
+static int delay_ms = REFRESH_MS;
 static double last_gpu_util = 0; /* captured during draw for history */
 
 /* ── Signal handler ─────────────────────────────────────────────────── */
@@ -860,7 +861,10 @@ static void draw_screen(void) {
     attron(A_BOLD | COLOR_PAIR(7));
     printw("+/-");
     attroff(A_BOLD | COLOR_PAIR(7));
-    printw(":speed ");
+    printw(":speed  ");
+    attron(COLOR_PAIR(8));
+    printw("%.1fs", delay_ms / 1000.0);
+    attroff(COLOR_PAIR(8));
 
     refresh();
 }
@@ -900,8 +904,6 @@ int main(void) {
         init_pair(7, COLOR_WHITE,   -1); /* bold text */
         init_pair(8, 244,           -1); /* dim/gray (256-color) */
     }
-
-    int delay_ms = REFRESH_MS;
 
     while (!g_quit) {
         compute_cpu_usage();
