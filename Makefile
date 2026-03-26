@@ -1,5 +1,5 @@
 CC      = gcc
-CFLAGS  = -O2 -Wall -Wextra -std=gnu11
+CFLAGS  = -O3 -march=native -flto -Wall -Wextra -std=gnu11
 LDFLAGS = -lncursesw -ldl -lpthread
 TARGET  = nv-monitor
 

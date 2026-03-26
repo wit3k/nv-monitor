@@ -20,6 +20,7 @@
 #include <ncurses.h>
 #include <locale.h>
 #include <sys/sysinfo.h>
+#include <getopt.h>
 
 /* ── NVML types (loaded dynamically) ────────────────────────────────── */
 
@@ -112,6 +113,11 @@ static volatile sig_atomic_t g_quit = 0;
 static int sort_mode = 0; /* 0=by mem, 1=by pid */
 static int delay_ms = REFRESH_MS;
 static double last_gpu_util = 0; /* captured during draw for history */
+
+/* Command-line options */
+static FILE *log_fp = NULL;
+static int   log_interval_ms = 1000;
+static int   no_ui = 0;
 
 /* ── Signal handler ─────────────────────────────────────────────────── */
 
@@ -516,6 +522,97 @@ static void record_history(double cpu, double gpu) {
     if (history_count < HISTORY_LEN) history_count++;
 }
 
+/* ── CSV logging ────────────────────────────────────────────────────── */
+
+static void log_csv_header(FILE *f) {
+    fprintf(f, "timestamp,cpu_avg_pct");
+    for (int i = 1; i <= num_cpus; i++)
+        fprintf(f, ",cpu%d_pct", i - 1);
+    fprintf(f, ",cpu_temp_c,cpu_freq_mhz");
+    fprintf(f, ",mem_used_kb,mem_total_kb,mem_bufcache_kb");
+    fprintf(f, ",swap_used_kb,swap_total_kb");
+    fprintf(f, ",gpu_util_pct,gpu_temp_c,gpu_power_mw,gpu_clock_mhz");
+    fprintf(f, "\n");
+    fflush(f);
+}
+
+static void log_csv_row(FILE *f) {
+    /* Timestamp */
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    struct tm tm;
+    localtime_r(&ts.tv_sec, &tm);
+    fprintf(f, "%04d-%02d-%02dT%02d:%02d:%02d.%03ld",
+            tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+            tm.tm_hour, tm.tm_min, tm.tm_sec, ts.tv_nsec / 1000000);
+
+    /* CPU */
+    fprintf(f, ",%.1f", cpu_pct[0]);
+    for (int i = 1; i <= num_cpus; i++)
+        fprintf(f, ",%.1f", cpu_pct[i]);
+
+    fprintf(f, ",%d,%d", read_cpu_temp(), read_cpu_freq_mhz());
+
+    /* Memory */
+    MemInfo mi;
+    read_meminfo(&mi);
+    unsigned long long used_kb = mi.total_kb - mi.avail_kb;
+    fprintf(f, ",%llu,%llu,%llu", used_kb, mi.total_kb,
+            mi.buffers_kb + mi.cached_kb);
+    fprintf(f, ",%llu,%llu",
+            mi.swap_total_kb - mi.swap_free_kb, mi.swap_total_kb);
+
+    /* GPU */
+    if (nvml_ok) {
+        nvmlDevice_t dev;
+        if (pNvmlDeviceGetHandleByIndex(0, &dev) == NVML_SUCCESS) {
+            nvmlUtilization_t util = {0};
+            pNvmlDeviceGetUtilizationRates(dev, &util);
+
+            unsigned int temp = 0;
+            pNvmlDeviceGetTemperature(dev, NVML_TEMPERATURE_GPU, &temp);
+
+            unsigned int power_mw = 0;
+            if (pNvmlDeviceGetPowerUsage)
+                pNvmlDeviceGetPowerUsage(dev, &power_mw);
+
+            unsigned int clk = 0;
+            if (pNvmlDeviceGetClockInfo)
+                pNvmlDeviceGetClockInfo(dev, NVML_CLOCK_GRAPHICS, &clk);
+
+            fprintf(f, ",%u,%u,%u,%u", util.gpu, temp, power_mw, clk);
+        } else {
+            fprintf(f, ",,,,");
+        }
+    } else {
+        fprintf(f, ",,,,");
+    }
+
+    fprintf(f, "\n");
+    fflush(f);
+}
+
+/* ── Usage ──────────────────────────────────────────────────────────── */
+
+static void print_usage(const char *prog) {
+    fprintf(stderr,
+        "Usage: %s [OPTIONS]\n"
+        "\n"
+        "Options:\n"
+        "  -l FILE   Log statistics to CSV file\n"
+        "  -i MS     Log interval in milliseconds (default: 1000)\n"
+        "  -n        No UI (headless mode, requires -l)\n"
+        "  -r MS     UI refresh interval in milliseconds (default: 1000)\n"
+        "  -h        Show this help\n"
+        "\n"
+        "Examples:\n"
+        "  %s -l stats.csv                  TUI + logging every 1s\n"
+        "  %s -l stats.csv -i 5000          TUI + logging every 5s\n"
+        "  %s -n -l stats.csv -i 500        Headless, log every 500ms\n"
+        "  %s -r 2000                       TUI refreshing every 2s\n",
+        prog, prog, prog, prog, prog);
+}
+
 /* ── Main draw ──────────────────────────────────────────────────────── */
 
 static void draw_screen(void) {
@@ -871,10 +968,39 @@ static void draw_screen(void) {
 
 /* ── Main ───────────────────────────────────────────────────────────── */
 
-int main(void) {
+int main(int argc, char *argv[]) {
     setlocale(LC_ALL, "");
     signal(SIGINT,  on_signal);
     signal(SIGTERM, on_signal);
+
+    const char *log_path = NULL;
+    int opt;
+    while ((opt = getopt(argc, argv, "l:i:nr:h")) != -1) {
+        switch (opt) {
+        case 'l': log_path = optarg; break;
+        case 'i': log_interval_ms = atoi(optarg); break;
+        case 'n': no_ui = 1; break;
+        case 'r': delay_ms = atoi(optarg); break;
+        case 'h': print_usage(argv[0]); return 0;
+        default:  print_usage(argv[0]); return 1;
+        }
+    }
+
+    if (no_ui && !log_path) {
+        fprintf(stderr, "Error: -n (no UI) requires -l <file>\n");
+        return 1;
+    }
+    if (log_interval_ms < 100) log_interval_ms = 100;
+    if (delay_ms < 250) delay_ms = 250;
+
+    /* Open log file */
+    if (log_path) {
+        log_fp = fopen(log_path, "w");
+        if (!log_fp) {
+            perror(log_path);
+            return 1;
+        }
+    }
 
     /* Load NVML */
     nvml_ok = (load_nvml() == 0);
@@ -884,55 +1010,83 @@ int main(void) {
     usleep(100000); /* brief pause for first delta */
     compute_cpu_usage();
 
-    /* Init ncurses */
-    initscr();
-    cbreak();
-    noecho();
-    curs_set(0);
-    nodelay(stdscr, TRUE);
-    keypad(stdscr, TRUE);
+    /* Write CSV header after first CPU sample (so we know num_cpus) */
+    if (log_fp)
+        log_csv_header(log_fp);
 
-    if (has_colors()) {
-        start_color();
-        use_default_colors();
-        init_pair(1, COLOR_RED,     -1); /* high/critical */
-        init_pair(2, COLOR_GREEN,   -1); /* normal/good */
-        init_pair(3, COLOR_YELLOW,  -1); /* medium */
-        init_pair(4, COLOR_BLUE,    -1); /* buf/cache */
-        init_pair(5, COLOR_MAGENTA, -1); /* compute */
-        init_pair(6, COLOR_CYAN,    -1); /* headers/gpu */
-        init_pair(7, COLOR_WHITE,   -1); /* bold text */
-        init_pair(8, 244,           -1); /* dim/gray (256-color) */
-    }
-
-    while (!g_quit) {
-        compute_cpu_usage();
-        draw_screen();
-
-        /* Input handling - poll within the refresh interval */
-        int elapsed = 0;
-        while (elapsed < delay_ms && !g_quit) {
-            int ch = getch();
-            if (ch == 'q' || ch == 'Q' || ch == 27) {
-                g_quit = 1;
-                break;
-            } else if (ch == 's' || ch == 'S') {
-                sort_mode = (sort_mode + 1) % 2;
-                break;
-            } else if (ch == '+' || ch == '=') {
-                if (delay_ms > 250) delay_ms -= 250;
-            } else if (ch == '-' || ch == '_') {
-                if (delay_ms < 5000) delay_ms += 250;
-            } else if (ch == KEY_RESIZE) {
-                break; /* redraw immediately */
-            }
-            usleep(50000);
-            elapsed += 50;
+    if (no_ui) {
+        /* ── Headless mode ──────────────────────────────────────────── */
+        fprintf(stderr, "Logging to %s every %dms (Ctrl+C to stop)\n",
+                log_path, log_interval_ms);
+        while (!g_quit) {
+            compute_cpu_usage();
+            log_csv_row(log_fp);
+            usleep(log_interval_ms * 1000);
         }
+        fprintf(stderr, "\nStopped.\n");
+    } else {
+        /* ── TUI mode ───────────────────────────────────────────────── */
+        initscr();
+        cbreak();
+        noecho();
+        curs_set(0);
+        nodelay(stdscr, TRUE);
+        keypad(stdscr, TRUE);
+
+        if (has_colors()) {
+            start_color();
+            use_default_colors();
+            init_pair(1, COLOR_RED,     -1); /* high/critical */
+            init_pair(2, COLOR_GREEN,   -1); /* normal/good */
+            init_pair(3, COLOR_YELLOW,  -1); /* medium */
+            init_pair(4, COLOR_BLUE,    -1); /* buf/cache */
+            init_pair(5, COLOR_MAGENTA, -1); /* compute */
+            init_pair(6, COLOR_CYAN,    -1); /* headers/gpu */
+            init_pair(7, COLOR_WHITE,   -1); /* bold text */
+            init_pair(8, 244,           -1); /* dim/gray (256-color) */
+        }
+
+        int log_elapsed = 0;
+
+        while (!g_quit) {
+            compute_cpu_usage();
+            draw_screen();
+
+            /* Log at log_interval_ms if logging enabled */
+            if (log_fp) {
+                log_elapsed += delay_ms;
+                if (log_elapsed >= log_interval_ms) {
+                    log_csv_row(log_fp);
+                    log_elapsed = 0;
+                }
+            }
+
+            /* Input handling - poll within the refresh interval */
+            int elapsed = 0;
+            while (elapsed < delay_ms && !g_quit) {
+                int ch = getch();
+                if (ch == 'q' || ch == 'Q' || ch == 27) {
+                    g_quit = 1;
+                    break;
+                } else if (ch == 's' || ch == 'S') {
+                    sort_mode = (sort_mode + 1) % 2;
+                    break;
+                } else if (ch == '+' || ch == '=') {
+                    if (delay_ms > 250) delay_ms -= 250;
+                } else if (ch == '-' || ch == '_') {
+                    if (delay_ms < 5000) delay_ms += 250;
+                } else if (ch == KEY_RESIZE) {
+                    break; /* redraw immediately */
+                }
+                usleep(50000);
+                elapsed += 50;
+            }
+        }
+
+        endwin();
     }
 
-    endwin();
-
+    if (log_fp) fclose(log_fp);
     if (nvml_ok && pNvmlShutdown) pNvmlShutdown();
     if (nvml_handle) dlclose(nvml_handle);
 
