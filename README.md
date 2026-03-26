@@ -13,7 +13,9 @@ A lightweight terminal system monitor built for the **NVIDIA DGX Spark** (Grace 
 - **Unified Memory**: Gracefully handles the DGX Spark's shared CPU/GPU memory architecture
 - **History Chart**: Rolling CPU/GPU usage graph (last 20 samples) using Unicode block elements
 - Color-coded bars (green/yellow/red) based on utilization thresholds
-- 1s default refresh, adjustable at runtime
+- **CSV Logging**: Log all stats to file with configurable interval
+- **Headless Mode**: Run without TUI for unattended data collection
+- 1s default refresh, adjustable at runtime or via CLI
 - NVML loaded dynamically at runtime — no hard dependency on NVIDIA drivers
 
 ![nv-monitor screenshot](nv-monitor.png)
@@ -34,7 +36,11 @@ make
 ## Usage
 
 ```bash
-./nv-monitor
+./nv-monitor                           # TUI only
+./nv-monitor -l stats.csv              # TUI + log every 1s
+./nv-monitor -l stats.csv -i 5000      # TUI + log every 5s
+./nv-monitor -n -l stats.csv -i 500    # Headless, log every 500ms
+./nv-monitor -r 2000                   # TUI refreshing every 2s
 ```
 
 Or install system-wide:
@@ -43,7 +49,17 @@ Or install system-wide:
 sudo make install
 ```
 
-### Controls
+### Command-line options
+
+| Flag      | Description                          | Default |
+|-----------|--------------------------------------|---------|
+| `-l FILE` | Log statistics to CSV file           | off     |
+| `-i MS`   | Log interval in milliseconds         | 1000    |
+| `-n`      | Headless mode (no TUI, requires `-l`)| off     |
+| `-r MS`   | UI refresh interval in milliseconds  | 1000    |
+| `-h`      | Show help                            |         |
+
+### Interactive controls
 
 | Key     | Action                              |
 |---------|-------------------------------------|
