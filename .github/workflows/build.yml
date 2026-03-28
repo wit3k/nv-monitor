@@ -1,0 +1,75 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libncurses-dev
+
+      - name: Build
+        run: make portable
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nv-monitor-linux-arm64
+          path: nv-monitor
+
+  build-amd64:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libncurses-dev
+
+      - name: Build
+        run: make portable
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nv-monitor-linux-amd64
+          path: nv-monitor
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-arm64, build-amd64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download arm64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: nv-monitor-linux-arm64
+          path: arm64
+
+      - name: Download amd64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: nv-monitor-linux-amd64
+          path: amd64
+
+      - name: Rename binaries
+        run: |
+          mv arm64/nv-monitor nv-monitor-linux-arm64
+          mv amd64/nv-monitor nv-monitor-linux-amd64
+          chmod +x nv-monitor-linux-*
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            nv-monitor-linux-arm64
+            nv-monitor-linux-amd64

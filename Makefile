@@ -1,5 +1,6 @@
 CC      = gcc
 CFLAGS  = -O3 -march=native -flto -Wall -Wextra -std=gnu11
+CFLAGS_PORTABLE = -O3 -flto -Wall -Wextra -std=gnu11
 LDFLAGS = -lncursesw -ldl -lpthread
 TARGET  = nv-monitor
 
@@ -7,6 +8,9 @@ all: $(TARGET)
 
 $(TARGET): nv-monitor.c
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+
+portable:
+	$(CC) $(CFLAGS_PORTABLE) -o $(TARGET) nv-monitor.c $(LDFLAGS)
 
 clean:
 	rm -f $(TARGET)
