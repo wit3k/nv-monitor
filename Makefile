@@ -1,6 +1,7 @@
 CC      = gcc
-CFLAGS  = -O3 -march=native -flto -Wall -Wextra -std=gnu11
-CFLAGS_PORTABLE = -O3 -flto -Wall -Wextra -std=gnu11
+VERSION = $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+CFLAGS  = -O3 -march=native -flto -Wall -Wextra -std=gnu11 -DVERSION='"$(VERSION)"'
+CFLAGS_PORTABLE = -O3 -flto -Wall -Wextra -std=gnu11 -DVERSION='"$(VERSION)"'
 LDFLAGS = -lncursesw -ldl -lpthread
 TARGET  = nv-monitor
 

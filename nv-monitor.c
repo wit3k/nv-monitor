@@ -7,6 +7,10 @@
  * Build: gcc -O2 -o nv-monitor nv-monitor.c -lncurses -ldl -lpthread
  */
 
+#ifndef VERSION
+#define VERSION "dev"
+#endif
+
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -97,8 +101,82 @@ typedef struct {
     unsigned long long mem_bytes;
     char          name[256];
     char          user[64];
-    char          type; /* C=compute, G=graphics */
+    char          type;    /* C=compute, G=graphics */
+    double        cpu_pct; /* per-process CPU% */
 } GpuProc;
+
+/* ── Per-process CPU tracking ───────────────────────────────────────── */
+
+#define MAX_TRACKED_PIDS 128
+
+typedef struct {
+    unsigned int  pid;
+    unsigned long long ticks; /* utime + stime */
+} ProcCpuSnap;
+
+static ProcCpuSnap prev_proc_snaps[MAX_TRACKED_PIDS];
+static int         prev_proc_count = 0;
+static unsigned long long prev_total_cpu_ticks = 0;
+
+static unsigned long long read_proc_cpu_ticks(unsigned int pid) {
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%u/stat", pid);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    char buf[1024];
+    int n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = '\0';
+    fclose(f);
+    char *cp = strrchr(buf, ')');
+    if (!cp) return 0;
+    cp += 2;
+    unsigned long utime = 0, stime = 0;
+    sscanf(cp, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %lu %lu",
+           &utime, &stime);
+    return utime + stime;
+}
+
+static unsigned long long read_total_cpu_ticks_sum(void) {
+    FILE *f = fopen("/proc/stat", "r");
+    if (!f) return 0;
+    char line[512];
+    unsigned long long sum = 0;
+    if (fgets(line, sizeof(line), f)) {
+        unsigned long long u, n, s, id, io, ir, si, st;
+        sscanf(line + 4, "%llu %llu %llu %llu %llu %llu %llu %llu",
+               &u, &n, &s, &id, &io, &ir, &si, &st);
+        sum = u + n + s + id + io + ir + si + st;
+    }
+    fclose(f);
+    return sum;
+}
+
+static double calc_proc_cpu_pct(unsigned int pid) {
+    unsigned long long cur_ticks = read_proc_cpu_ticks(pid);
+    unsigned long long cur_total = read_total_cpu_ticks_sum();
+    unsigned long long total_delta = cur_total - prev_total_cpu_ticks;
+
+    /* Find previous snapshot for this PID */
+    for (int i = 0; i < prev_proc_count; i++) {
+        if (prev_proc_snaps[i].pid == pid) {
+            unsigned long long proc_delta = cur_ticks - prev_proc_snaps[i].ticks;
+            if (total_delta > 0)
+                return (double)proc_delta / (double)total_delta * 100.0 * num_cpus;
+            return 0.0;
+        }
+    }
+    return 0.0; /* no previous sample */
+}
+
+static void update_proc_cpu_snapshots(GpuProc *procs, int count) {
+    prev_proc_count = 0;
+    for (int i = 0; i < count && prev_proc_count < MAX_TRACKED_PIDS; i++) {
+        prev_proc_snaps[prev_proc_count].pid = procs[i].pid;
+        prev_proc_snaps[prev_proc_count].ticks = read_proc_cpu_ticks(procs[i].pid);
+        prev_proc_count++;
+    }
+    prev_total_cpu_ticks = read_total_cpu_ticks_sum();
+}
 
 /* ── History ring buffers ────────────────────────────────────────────── */
 
@@ -632,13 +710,17 @@ static void print_usage(const char *prog) {
         "  -i MS     Log interval in milliseconds (default: 1000)\n"
         "  -n        No UI (headless mode, requires -l)\n"
         "  -r MS     UI refresh interval in milliseconds (default: 1000)\n"
+        "  -v        Show version\n"
         "  -h        Show this help\n"
         "\n"
         "Examples:\n"
         "  %s -l stats.csv                  TUI + logging every 1s\n"
         "  %s -l stats.csv -i 5000          TUI + logging every 5s\n"
         "  %s -n -l stats.csv -i 500        Headless, log every 500ms\n"
-        "  %s -r 2000                       TUI refreshing every 2s\n",
+        "  %s -r 2000                       TUI refreshing every 2s\n"
+        "\n"
+        "Copyright (c) 2026 Paul Gresham Advisory LLC\n"
+        "https://github.com/wentbackward/nv-monitor\n",
         prog, prog, prog, prog, prog);
 }
 
@@ -654,7 +736,7 @@ static void draw_screen(void) {
 
     /* ── Header ─────────────────────────────────────────────────────── */
     attron(A_BOLD | COLOR_PAIR(6));
-    mvprintw(y, 0, " nv-monitor");
+    mvprintw(y, 0, " nv-monitor %s", VERSION);
     attroff(A_BOLD | COLOR_PAIR(6));
     attron(COLOR_PAIR(7));
     printw("  DGX Spark (Grace + GB10)");
@@ -903,6 +985,7 @@ static void draw_screen(void) {
                 p->pid = comp_procs[i].pid;
                 p->mem_bytes = comp_procs[i].usedGpuMemory;
                 p->type = 'C';
+                p->cpu_pct = calc_proc_cpu_pct(p->pid);
                 get_proc_cmdline(p->pid, p->name, sizeof(p->name));
                 get_proc_user(p->pid, p->user, sizeof(p->user));
             }
@@ -916,9 +999,13 @@ static void draw_screen(void) {
                 p->pid = gfx_procs[i].pid;
                 p->mem_bytes = gfx_procs[i].usedGpuMemory;
                 p->type = 'G';
+                p->cpu_pct = calc_proc_cpu_pct(p->pid);
                 get_proc_cmdline(p->pid, p->name, sizeof(p->name));
                 get_proc_user(p->pid, p->user, sizeof(p->user));
             }
+
+            /* Save snapshots for next frame's delta calculation */
+            update_proc_cpu_snapshots(all_procs, n_all);
 
             /* Sort by memory descending */
             for (int i = 0; i < n_all - 1; i++)
@@ -937,7 +1024,8 @@ static void draw_screen(void) {
 
             if (n_all > 0) {
                 attron(A_BOLD | COLOR_PAIR(7));
-                mvprintw(y, 1, "  %-8s %-12s %-4s %-12s %s", "PID", "USER", "TYPE", "GPU MEM", "COMMAND");
+                mvprintw(y, 1, "  %-8s %-12s %-4s %5s %-12s %s",
+                         "PID", "USER", "TYPE", "CPU%", "GPU MEM", "COMMAND");
                 attroff(A_BOLD | COLOR_PAIR(7));
                 y++;
 
@@ -946,7 +1034,7 @@ static void draw_screen(void) {
                     char mb[16];
                     fmt_bytes(p->mem_bytes, mb, sizeof(mb));
 
-                    int name_max = cols - 44;
+                    int name_max = cols - 52;
                     if (name_max < 10) name_max = 10;
                     char truncname[256];
                     snprintf(truncname, sizeof(truncname), "%-.*s", name_max, p->name);
@@ -956,9 +1044,22 @@ static void draw_screen(void) {
                     attron(COLOR_PAIR(pc));
                     printw("%-4c", p->type);
                     attroff(COLOR_PAIR(pc));
-                    printw(" %-12s %s", mb, truncname);
+                    printw(" %4.1f%% %-12s %s", p->cpu_pct, mb, truncname);
                     y++;
                 }
+
+                /* Non-GPU processes summary */
+                double gpu_proc_cpu = 0;
+                for (int i = 0; i < n_all; i++)
+                    gpu_proc_cpu += all_procs[i].cpu_pct;
+                double other_cpu = cpu_pct[0] - gpu_proc_cpu;
+                if (other_cpu < 0) other_cpu = 0;
+                attron(COLOR_PAIR(8));
+                mvprintw(y, 1, "  %-8s %-12s %-4s %4.1f%%",
+                         "", "", "", other_cpu);
+                printw(" %-12s %s", "", "(other processes)");
+                attroff(COLOR_PAIR(8));
+                y++;
             }
         }
     }
@@ -1007,12 +1108,13 @@ int main(int argc, char *argv[]) {
 
     const char *log_path = NULL;
     int opt;
-    while ((opt = getopt(argc, argv, "l:i:nr:h")) != -1) {
+    while ((opt = getopt(argc, argv, "l:i:nr:vh")) != -1) {
         switch (opt) {
         case 'l': log_path = optarg; break;
         case 'i': log_interval_ms = atoi(optarg); break;
         case 'n': no_ui = 1; break;
         case 'r': delay_ms = atoi(optarg); break;
+        case 'v': printf("nv-monitor %s\n", VERSION); return 0;
         case 'h': print_usage(argv[0]); return 0;
         default:  print_usage(argv[0]); return 1;
         }
