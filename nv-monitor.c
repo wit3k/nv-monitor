@@ -431,16 +431,15 @@ static void get_proc_cmdline(unsigned int pid, char *buf, int len) {
             /* Replace nulls with spaces */
             for (int i = 0; i < n - 1; i++)
                 if (buf[i] == '\0') buf[i] = ' ';
-            /* Trim to just the command name */
-            char *slash = strrchr(buf, '/');
-            if (slash && slash < buf + n) {
-                char *space = strchr(slash, ' ');
-                if (space) *space = '\0';
+            /* Shorten the first arg (command) to its basename, keep the rest */
+            char *space = strchr(buf, ' ');
+            char *slash = NULL;
+            if (space)
+                slash = memrchr(buf, '/', space - buf);
+            else
+                slash = strrchr(buf, '/');
+            if (slash)
                 memmove(buf, slash + 1, strlen(slash + 1) + 1);
-            } else {
-                char *space = strchr(buf, ' ');
-                if (space) *space = '\0';
-            }
             return;
         }
     }
@@ -1024,7 +1023,7 @@ static void draw_screen(void) {
 
             if (n_all > 0) {
                 attron(A_BOLD | COLOR_PAIR(7));
-                mvprintw(y, 1, "  %-8s %-12s %-4s %5s %-12s %s",
+                mvprintw(y, 1, "  %-8s %-12s %-4s %6s %-12s %s",
                          "PID", "USER", "TYPE", "CPU%", "GPU MEM", "COMMAND");
                 attroff(A_BOLD | COLOR_PAIR(7));
                 y++;
@@ -1034,7 +1033,7 @@ static void draw_screen(void) {
                     char mb[16];
                     fmt_bytes(p->mem_bytes, mb, sizeof(mb));
 
-                    int name_max = cols - 52;
+                    int name_max = cols - 53;
                     if (name_max < 10) name_max = 10;
                     char truncname[256];
                     snprintf(truncname, sizeof(truncname), "%-.*s", name_max, p->name);
@@ -1044,7 +1043,7 @@ static void draw_screen(void) {
                     attron(COLOR_PAIR(pc));
                     printw("%-4c", p->type);
                     attroff(COLOR_PAIR(pc));
-                    printw(" %4.1f%% %-12s %s", p->cpu_pct, mb, truncname);
+                    printw(" %5.1f%% %-12s %s", p->cpu_pct, mb, truncname);
                     y++;
                 }
 
@@ -1052,10 +1051,12 @@ static void draw_screen(void) {
                 double gpu_proc_cpu = 0;
                 for (int i = 0; i < n_all; i++)
                     gpu_proc_cpu += all_procs[i].cpu_pct;
-                double other_cpu = cpu_pct[0] - gpu_proc_cpu;
+                /* Scale overall CPU to per-core basis to match process CPU% */
+                double total_cpu = cpu_pct[0] * num_cpus;
+                double other_cpu = total_cpu - gpu_proc_cpu;
                 if (other_cpu < 0) other_cpu = 0;
                 attron(COLOR_PAIR(8));
-                mvprintw(y, 1, "  %-8s %-12s %-4s %4.1f%%",
+                mvprintw(y, 1, "  %-8s %-12s %-4s %5.1f%%",
                          "", "", "", other_cpu);
                 printw(" %-12s %s", "", "(other processes)");
                 attroff(COLOR_PAIR(8));
