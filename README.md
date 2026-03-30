@@ -1,8 +1,10 @@
 # nv-monitor
 
-A lightweight terminal system monitor built for the **NVIDIA DGX Spark** (Grace CPU + GB10 GPU). Think htop + nvtop in a single 73KB binary.
+Local monitoring TUI, CSV logger, and Prometheus/OpenMetrics exporter for NVIDIA GPU systems — all in a single <80KB binary with zero runtime dependencies. Built for the **DGX Spark** (Grace + GB10), works on any Linux system with an NVIDIA GPU.
 
-![C](https://img.shields.io/badge/lang-C-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Arch](https://img.shields.io/badge/arch-aarch64-orange)
+Accurately monitor a single machine or an entire cluster with minimal overhead. Reports metrics to NVIDIA specifications via NVML, with correct handling of unified memory, HugePages, and ARM big.LITTLE core topology.
+
+![C](https://img.shields.io/badge/lang-C-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Arch](https://img.shields.io/badge/arch-aarch64%20%7C%20x86__64-orange)
 
 ## Display
 
@@ -144,10 +146,16 @@ No new dependencies are required — the exporter uses POSIX sockets and adds ~1
 ## Requirements
 
 - Linux (reads from `/proc` and `/sys`)
-- ncurses
+- ncurses (TUI mode)
 - NVIDIA drivers with NVML (for GPU monitoring — CPU/memory work without it)
 
-Tested on DGX Spark (aarch64, CUDA 13.0, driver 580.x) but should work on any Linux system with an NVIDIA GPU.
+### Platform support
+
+| Platform | Status |
+|----------|--------|
+| DGX Spark (aarch64, Grace + GB10) | Primary target — full support including unified memory, HugePages, big.LITTLE core labels |
+| Any Linux + NVIDIA GPU (x86_64) | Fully supported — CPU, memory, GPU, processes, Prometheus exporter |
+| Linux without NVIDIA GPU | CPU and memory monitoring only, GPU section shows "NVML not available" |
 
 ## License
 
