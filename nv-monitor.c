@@ -1173,7 +1173,9 @@ static void draw_screen(void) {
     attron(A_BOLD | COLOR_PAIR(3));
     mvprintw(y, 1, "CPU");
     attroff(A_BOLD | COLOR_PAIR(3));
-    printw("  %d cores  %d MHz  %d C", num_cpus, cpu_freq, cpu_temp);
+    printw("  %d cores", num_cpus);
+    if (cpu_freq > 0) printw("  %d MHz", cpu_freq);
+    if (cpu_temp > 0) printw("  %d C", cpu_temp);
 
     attron(A_BOLD);
     mvprintw(y, cols / 2 + 1, "Overall: ");
