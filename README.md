@@ -43,7 +43,16 @@ Accurately monitor a single machine or an entire cluster with minimal overhead. 
 - 1s default refresh, adjustable at runtime or via CLI
 - NVML loaded dynamically at runtime — no hard dependency on NVIDIA drivers
 
-![nv-monitor screenshot](nv-monitor.png)
+<table>
+<tr>
+<td><strong>aarch64</strong> (DGX Spark — Grace + GB10)</td>
+<td><strong>x86_64</strong> (Laptop — Ryzen 7 + RTX 3050)</td>
+</tr>
+<tr>
+<td><img src="nv-monitor-arm.png" alt="nv-monitor on ARM"></td>
+<td><img src="nv-monitor-x86.png" alt="nv-monitor on x86"></td>
+</tr>
+</table>
 
 ## Download
 
