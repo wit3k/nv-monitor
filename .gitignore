@@ -2,3 +2,4 @@ nv-monitor
 nv-monitor-dbg
 test_meminfo
 *.o
+demo-load
