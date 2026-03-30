@@ -93,6 +93,7 @@ typedef struct {
 static int       num_cpus = 0;
 static CpuTick   prev_ticks[MAX_CPUS + 1]; /* index 0 = aggregate */
 static double     cpu_pct[MAX_CPUS + 1];
+static unsigned int cpu_part[MAX_CPUS];     /* ARM CPU part IDs */
 
 /* ── GPU process info ───────────────────────────────────────────────── */
 
@@ -251,6 +252,39 @@ static int load_nvml(void) {
     if (pNvmlInit() != NVML_SUCCESS) return -1;
 
     return 0;
+}
+
+/* ── CPU core type identification ───────────────────────────────────── */
+
+static void read_cpu_part_ids(void) {
+    FILE *f = fopen("/proc/cpuinfo", "r");
+    if (!f) return;
+    char line[256];
+    int cur_cpu = -1;
+    while (fgets(line, sizeof(line), f)) {
+        int n;
+        if (sscanf(line, "processor : %d", &n) == 1) {
+            cur_cpu = n;
+        } else if (cur_cpu >= 0 && cur_cpu < MAX_CPUS) {
+            unsigned int part;
+            if (sscanf(line, "CPU part : %x", &part) == 1)
+                cpu_part[cur_cpu] = part;
+        }
+    }
+    fclose(f);
+}
+
+static const char *cpu_part_label(int cpu_idx) {
+    switch (cpu_part[cpu_idx]) {
+    case 0xd85: return "X925";
+    case 0xd87: return "X725";
+    case 0xd44: return "X4";
+    case 0xd43: return "A720";
+    case 0xd46: return "A725";
+    case 0xd41: return "A78";
+    case 0xd40: return "V2";
+    default:    return "";
+    }
 }
 
 /* ── CPU sampling ───────────────────────────────────────────────────── */
@@ -790,26 +824,35 @@ static void draw_screen(void) {
 
     /* Per-core bars - two columns */
     int half = (num_cpus + 1) / 2;
-    int bar_w = cols / 2 - 11; /* 4 label + 7 suffix " xxx.x%" */
+    int lbl_w = 9; /* "XX YYYY " — core number + type label */
+    int bar_w = cols / 2 - lbl_w - 7; /* label + suffix " xxx.x%" */
     if (bar_w < 5) bar_w = 5;
 
     for (int i = 0; i < half; i++) {
-        int cpu_l = i + 1;
-        int cpu_r = i + half + 1;
+        int cpu_l = i;
+        int cpu_r = i + half;
 
         /* Left column */
-        int color = cpu_pct[cpu_l] > 90 ? 1 : (cpu_pct[cpu_l] > 60 ? 3 : 2);
-        mvprintw(y, 1, "%2d ", i);
-        draw_bar(y, 4, bar_w, cpu_pct[cpu_l], color);
-        mvprintw(y, 4 + bar_w, " %4.1f%%", cpu_pct[cpu_l]);
+        int color = cpu_pct[cpu_l + 1] > 90 ? 1 : (cpu_pct[cpu_l + 1] > 60 ? 3 : 2);
+        const char *lbl_l = cpu_part_label(cpu_l);
+        mvprintw(y, 1, "%2d ", cpu_l);
+        attron(COLOR_PAIR(8));
+        printw("%-4s ", lbl_l);
+        attroff(COLOR_PAIR(8));
+        draw_bar(y, 1 + lbl_w, bar_w, cpu_pct[cpu_l + 1], color);
+        mvprintw(y, 1 + lbl_w + bar_w, " %4.1f%%", cpu_pct[cpu_l + 1]);
 
         /* Right column */
-        if (cpu_r <= num_cpus) {
+        if (cpu_r < num_cpus) {
             int rx = cols / 2 + 1;
-            color = cpu_pct[cpu_r] > 90 ? 1 : (cpu_pct[cpu_r] > 60 ? 3 : 2);
-            mvprintw(y, rx, "%2d ", i + half);
-            draw_bar(y, rx + 3, bar_w, cpu_pct[cpu_r], color);
-            mvprintw(y, rx + 3 + bar_w, " %4.1f%%", cpu_pct[cpu_r]);
+            color = cpu_pct[cpu_r + 1] > 90 ? 1 : (cpu_pct[cpu_r + 1] > 60 ? 3 : 2);
+            const char *lbl_r = cpu_part_label(cpu_r);
+            mvprintw(y, rx, "%2d ", cpu_r);
+            attron(COLOR_PAIR(8));
+            printw("%-4s ", lbl_r);
+            attroff(COLOR_PAIR(8));
+            draw_bar(y, rx + lbl_w - 1, bar_w, cpu_pct[cpu_r + 1], color);
+            mvprintw(y, rx + lbl_w - 1 + bar_w, " %4.1f%%", cpu_pct[cpu_r + 1]);
         }
         y++;
         if (y >= rows - 2) break;
@@ -1157,6 +1200,9 @@ int main(int argc, char *argv[]) {
 
     /* Load NVML */
     nvml_ok = (load_nvml() == 0);
+
+    /* Read CPU core types (ARM part IDs) */
+    read_cpu_part_ids();
 
     /* Initial CPU tick read */
     read_cpu_ticks(prev_ticks, &num_cpus);
