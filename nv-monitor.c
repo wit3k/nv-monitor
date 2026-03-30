@@ -550,12 +550,19 @@ static const char *block_chars[] = {
     "\xe2\x96\x87", "\xe2\x96\x88"
 };
 
-static void draw_history_chart(int top_y, int right_x, int chart_h, int chart_w) {
-    int n = history_count < chart_w ? history_count : chart_w;
+static void draw_history_chart(int top_y, int total_w, int chart_h) {
+    int n = history_count < HISTORY_LEN ? history_count : HISTORY_LEN;
     if (n == 0) return;
 
-    /* Chart title */
-    int title_x = right_x - chart_w - 1;
+    int margin = 2;
+    int label_w = 5; /* "100% " */
+    int left_x = margin + label_w;
+    int right_x = total_w - margin;
+    int avail_w = right_x - left_x;
+    if (avail_w < 10) return;
+
+    /* Title centered above chart */
+    int title_x = left_x;
     attron(A_BOLD | COLOR_PAIR(7));
     mvprintw(top_y - 1, title_x, "CPU");
     attroff(A_BOLD | COLOR_PAIR(7));
@@ -569,59 +576,62 @@ static void draw_history_chart(int top_y, int right_x, int chart_h, int chart_w)
     printw(" history");
     attroff(COLOR_PAIR(8));
 
-    /* For each sample column, draw CPU and GPU as stacked/overlaid vertical bars.
-     * Each column is 2 chars wide: one for CPU, one for GPU */
-    int col_w = 2; /* chars per sample: CPU char + GPU char */
-    int max_samples = chart_w / col_w;
-    if (n > max_samples) n = max_samples;
+    /* Each sample gets 2 sub-columns (CPU + GPU), scaled to fill width */
+    int col_w = avail_w / n; /* chars per sample */
+    if (col_w < 2) col_w = 2;
+    int cpu_w = col_w / 2;
+    int gpu_w = col_w - cpu_w;
 
-    for (int s = 0; s < n; s++) {
-        /* Get sample index (oldest to newest, left to right) */
-        int idx = (history_pos - n + s + HISTORY_LEN) % HISTORY_LEN;
+    /* Recalculate how many samples fit */
+    int visible = avail_w / col_w;
+    if (visible > n) visible = n;
+
+    /* Center the chart within available space */
+    int chart_total = visible * col_w;
+    int x_start = left_x + (avail_w - chart_total) / 2;
+
+    for (int s = 0; s < visible; s++) {
+        int idx = (history_pos - visible + s + HISTORY_LEN) % HISTORY_LEN;
         double cpu_val = cpu_history[idx];
         double gpu_val = gpu_history[idx];
 
-        /* Map percentage to block level (0-8) per row */
         int cpu_blocks = (int)(cpu_val / 100.0 * chart_h * 8 + 0.5);
         int gpu_blocks = (int)(gpu_val / 100.0 * chart_h * 8 + 0.5);
 
-        int x = right_x - (n - s) * col_w;
+        int x = x_start + s * col_w;
+
+        int cpu_color = cpu_val > 90 ? 1 : (cpu_val > 60 ? 3 : 2);
+        int gpu_color = gpu_val > 90 ? 1 : (gpu_val > 60 ? 3 : 6);
 
         for (int row = 0; row < chart_h; row++) {
-            int ry = top_y + chart_h - 1 - row; /* bottom to top */
+            int ry = top_y + chart_h - 1 - row;
             int row_base = row * 8;
 
-            /* CPU column */
             int cpu_fill = cpu_blocks - row_base;
             if (cpu_fill < 0) cpu_fill = 0;
             if (cpu_fill > 8) cpu_fill = 8;
 
-            /* GPU column */
             int gpu_fill = gpu_blocks - row_base;
             if (gpu_fill < 0) gpu_fill = 0;
             if (gpu_fill > 8) gpu_fill = 8;
 
-            int cpu_color = cpu_val > 90 ? 1 : (cpu_val > 60 ? 3 : 2);
-            int gpu_color = gpu_val > 90 ? 1 : (gpu_val > 60 ? 3 : 6);
-
             move(ry, x);
             attron(COLOR_PAIR(cpu_color));
-            printw("%s", block_chars[cpu_fill]);
+            for (int c = 0; c < cpu_w; c++)
+                printw("%s", block_chars[cpu_fill]);
             attroff(COLOR_PAIR(cpu_color));
             attron(COLOR_PAIR(gpu_color));
-            printw("%s", block_chars[gpu_fill]);
+            for (int c = 0; c < gpu_w; c++)
+                printw("%s", block_chars[gpu_fill]);
             attroff(COLOR_PAIR(gpu_color));
         }
     }
 
     /* Y-axis labels */
-    int lx = right_x - n * col_w - 5;
-    if (lx >= 0) {
-        attron(COLOR_PAIR(8));
-        mvprintw(top_y, lx, "100%%");
-        mvprintw(top_y + chart_h - 1, lx, "  0%%");
-        attroff(COLOR_PAIR(8));
-    }
+    attron(COLOR_PAIR(8));
+    mvprintw(top_y, margin, "100%%");
+    mvprintw(top_y + chart_h - 1, margin, "  0%%");
+    attroff(COLOR_PAIR(8));
 }
 
 static void record_history(double cpu, double gpu) {
@@ -735,7 +745,7 @@ static void draw_screen(void) {
 
     /* ── Header ─────────────────────────────────────────────────────── */
     attron(A_BOLD | COLOR_PAIR(6));
-    mvprintw(y, 0, " nv-monitor %s", VERSION);
+    mvprintw(y, 0, " nv-monitor");
     attroff(A_BOLD | COLOR_PAIR(6));
     attron(COLOR_PAIR(7));
     printw("  DGX Spark (Grace + GB10)");
@@ -745,7 +755,11 @@ static void draw_screen(void) {
     fmt_uptime(upbuf, sizeof(upbuf));
     double l1, l5, l15;
     get_loadavg(&l1, &l5, &l15);
-    mvprintw(y, cols - 50, "up %s  load %.2f %.2f %.2f", upbuf, l1, l5, l15);
+    {
+        char info[128];
+        int len = snprintf(info, sizeof(info), "up %s  load %.2f %.2f %.2f", upbuf, l1, l5, l15);
+        mvprintw(y, cols - len - 1, "%s", info);
+    }
     y += 1;
 
     attron(COLOR_PAIR(8));
@@ -1065,14 +1079,13 @@ static void draw_screen(void) {
         }
     }
 
-    /* ── History chart (bottom right) ──────────────────────────────── */
+    /* ── History chart (full width) ───────────────────────────────── */
     record_history(cpu_pct[0], last_gpu_util);
     {
         int chart_h = 5;
-        int chart_w = HISTORY_LEN * 2; /* 2 chars per sample */
         int chart_top = rows - 2 - chart_h;
-        if (chart_top > y + 1 && cols > chart_w + 10) {
-            draw_history_chart(chart_top, cols - 1, chart_h, chart_w);
+        if (chart_top > y + 1 && cols > 20) {
+            draw_history_chart(chart_top, cols, chart_h);
         }
     }
 
@@ -1095,6 +1108,11 @@ static void draw_screen(void) {
     printw(":speed  ");
     attron(COLOR_PAIR(8));
     printw("%.1fs", delay_ms / 1000.0);
+    attroff(COLOR_PAIR(8));
+
+    /* Version, right-aligned */
+    attron(COLOR_PAIR(8));
+    mvprintw(rows - 1, cols - (int)strlen(VERSION) - 2, "%s ", VERSION);
     attroff(COLOR_PAIR(8));
 
     refresh();
