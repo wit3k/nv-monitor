@@ -175,6 +175,10 @@ make demo-load
 | Any Linux + NVIDIA GPU (x86_64) | Fully supported — CPU, memory, GPU, processes, Prometheus exporter |
 | Linux without NVIDIA GPU | CPU and memory monitoring only, GPU section shows "NVML not available" |
 
+## Contributors
+
+- Prometheus metrics exporter by [Tim Messerschmidt (@SeraphimSerapis)](https://github.com/SeraphimSerapis)
+
 ## License
 
 MIT
