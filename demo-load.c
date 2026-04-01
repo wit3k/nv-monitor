@@ -24,8 +24,40 @@
 
 static volatile int running = 1;
 static unsigned int gpu_blocks = 1024;
+#define DEFAULT_MAX_SECONDS 300 /* 5 minute failsafe */
 
 static void on_signal(int sig) { (void)sig; running = 0; }
+
+/* Parse "HH:MM" or "HH:MM:SS" into epoch seconds. Returns -1 on error. */
+static time_t parse_time(const char *s) {
+    int h, m, sec = 0;
+    if (sscanf(s, "%d:%d:%d", &h, &m, &sec) < 2) return -1;
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    tm.tm_hour = h;
+    tm.tm_min = m;
+    tm.tm_sec = sec;
+    time_t target = mktime(&tm);
+    /* If time is in the past, assume tomorrow */
+    if (target <= now) target += 86400;
+    return target;
+}
+
+/* Parse duration like "30s", "5m", "1h", or bare seconds. Returns seconds, -1 on error. */
+static int parse_duration(const char *s) {
+    int val = atoi(s);
+    if (val <= 0) return -1;
+    int len = strlen(s);
+    if (len > 0) {
+        switch (s[len - 1]) {
+        case 'h': case 'H': return val * 3600;
+        case 'm': case 'M': return val * 60;
+        case 's': case 'S': return val;
+        }
+    }
+    return val; /* bare number = seconds */
+}
 
 /* ── CPU load ──────────────────────────────────────────────────────── */
 
@@ -268,6 +300,9 @@ static void *gpu_load_thread(void *arg) {
 
 int main(int argc, char **argv) {
     int do_cpu = 1, do_gpu = 0;
+    int duration_sec = 0;       /* 0 = run until Ctrl-C */
+    time_t stop_at = 0;         /* 0 = not set */
+    int allow_long_run = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--gpu") == 0)
@@ -278,18 +313,54 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--blocks") == 0 && i + 1 < argc) {
             gpu_blocks = (unsigned int)atoi(argv[++i]);
             if (gpu_blocks < 1) gpu_blocks = 1;
+        } else if (strcmp(argv[i], "--duration") == 0 && i + 1 < argc) {
+            duration_sec = parse_duration(argv[++i]);
+            if (duration_sec <= 0) {
+                fprintf(stderr, "Invalid duration: %s (use e.g. 30s, 5m, 1h)\n", argv[i]);
+                return 1;
+            }
+        } else if (strcmp(argv[i], "--until") == 0 && i + 1 < argc) {
+            stop_at = parse_time(argv[++i]);
+            if (stop_at < 0) {
+                fprintf(stderr, "Invalid time: %s (use HH:MM or HH:MM:SS)\n", argv[i]);
+                return 1;
+            }
+        } else if (strcmp(argv[i], "--allow-long-run") == 0) {
+            allow_long_run = 1;
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
-            printf("Usage: %s [--gpu] [--gpu-only] [--blocks N]\n\n"
+            printf("Usage: %s [OPTIONS]\n\n"
                    "Synthetic load generator for testing nv-monitor.\n\n"
-                   "  --gpu        Enable GPU load alongside CPU load\n"
-                   "  --gpu-only   GPU load only (no CPU threads)\n"
-                   "  --blocks N   CUDA blocks per kernel launch (default: 1024)\n"
-                   "               Increase for bigger GPUs, decrease for smaller\n\n"
+                   "  --gpu              Enable GPU load alongside CPU load\n"
+                   "  --gpu-only         GPU load only (no CPU threads)\n"
+                   "  --blocks N         CUDA blocks per kernel launch (default: 1024)\n"
+                   "  --duration TIME    Run for specified time (e.g. 30s, 5m, 1h)\n"
+                   "  --until HH:MM     Run until specified time (24h format)\n"
+                   "  --allow-long-run   Allow runs longer than 5 minutes\n\n"
+                   "Without --duration or --until, stops after 5 minutes unless\n"
+                   "--allow-long-run is set.\n\n"
                    "Copyright (c) 2026 Paul Gresham Advisory LLC\n"
                    "https://github.com/wentbackward/nv-monitor\n",
                    argv[0]);
             return 0;
         }
+    }
+
+    /* Determine stop time */
+    time_t now = time(NULL);
+    if (stop_at > 0) {
+        /* --until takes precedence */
+    } else if (duration_sec > 0) {
+        stop_at = now + duration_sec;
+    } else if (!allow_long_run) {
+        /* Default failsafe: 5 minutes */
+        stop_at = now + DEFAULT_MAX_SECONDS;
+    }
+    /* else: allow_long_run with no duration = run until Ctrl-C */
+
+    /* Check failsafe */
+    if (stop_at > 0 && !allow_long_run && (stop_at - now) > DEFAULT_MAX_SECONDS) {
+        fprintf(stderr, "Error: run time exceeds 5 minutes. Use --allow-long-run to override.\n");
+        return 1;
     }
 
     signal(SIGINT, on_signal);
@@ -319,11 +390,23 @@ int main(int argc, char **argv) {
         gpu_started = 1;
     }
 
-    printf("Press Ctrl-C to stop\n");
+    if (stop_at > 0) {
+        int remaining = (int)(stop_at - time(NULL));
+        printf("Will stop in %dm %ds (Ctrl-C to stop early)\n",
+               remaining / 60, remaining % 60);
+    } else {
+        printf("Press Ctrl-C to stop\n");
+    }
 
     /* Wait */
-    while (running)
+    while (running) {
+        if (stop_at > 0 && time(NULL) >= stop_at) {
+            printf("\nTime limit reached.\n");
+            running = 0;
+            break;
+        }
         sleep(1);
+    }
 
     printf("\nStopping...\n");
 
