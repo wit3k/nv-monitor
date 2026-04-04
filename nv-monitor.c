@@ -54,6 +54,7 @@ typedef struct {
 } nvmlProcessInfo_t;
 
 #define NVML_SUCCESS 0
+#define NVML_ERROR_NOT_SUPPORTED 3
 #define NVML_TEMPERATURE_GPU 0
 #define NVML_CLOCK_GRAPHICS 0
 #define NVML_CLOCK_MEM 2
@@ -79,6 +80,7 @@ static nvmlReturn_t (*pNvmlDeviceGetDecoderUtilization)(nvmlDevice_t, unsigned i
 static void *nvml_handle = NULL;
 static int   nvml_ok = 0;
 static unsigned int gpu_count = 0;      /* number of GPUs detected */
+static int   use_tegra_gpu = 0;         /* prefer Tegra sysfs over NVML for GPU metrics */
 static char  cpu_model_name[128] = "";  /* from /proc/cpuinfo */
 
 /* ── Constants ──────────────────────────────────────────────────────── */
@@ -858,19 +860,17 @@ static void log_csv_row(FILE *f) {
         nvmlDevice_t dev;
         if (pNvmlDeviceGetHandleByIndex(g, &dev) == NVML_SUCCESS) {
             nvmlUtilization_t util = {0};
-            int csv_util_ok = (pNvmlDeviceGetUtilizationRates &&
-                               pNvmlDeviceGetUtilizationRates(dev, &util) == NVML_SUCCESS &&
-                               util.gpu > 0);
-            if (!csv_util_ok && tegra_gpu_available) {
+            if (!use_tegra_gpu && pNvmlDeviceGetUtilizationRates)
+                pNvmlDeviceGetUtilizationRates(dev, &util);
+            if (use_tegra_gpu) {
                 int tutil = read_tegra_gpu_util();
                 if (tutil >= 0) util.gpu = (unsigned int)tutil;
             }
 
             unsigned int temp = 0;
-            int csv_temp_ok = (pNvmlDeviceGetTemperature &&
-                               pNvmlDeviceGetTemperature(dev, NVML_TEMPERATURE_GPU, &temp) == NVML_SUCCESS &&
-                               temp > 0);
-            if (!csv_temp_ok && tegra_gpu_therm_zone >= 0) {
+            if (!use_tegra_gpu && pNvmlDeviceGetTemperature)
+                pNvmlDeviceGetTemperature(dev, NVML_TEMPERATURE_GPU, &temp);
+            if (use_tegra_gpu && tegra_gpu_therm_zone >= 0) {
                 int ttemp = read_tegra_gpu_temp();
                 if (ttemp > 0) temp = (unsigned int)ttemp;
             }
@@ -1133,19 +1133,17 @@ static int format_metrics(char *buf, int buflen) {
             pNvmlDeviceGetName(dev, g->name, sizeof(g->name));
 
             nvmlUtilization_t util = {0};
-            int prom_util_ok = (pNvmlDeviceGetUtilizationRates &&
-                                pNvmlDeviceGetUtilizationRates(dev, &util) == NVML_SUCCESS &&
-                                util.gpu > 0);
-            if (!prom_util_ok && tegra_gpu_available) {
+            if (!use_tegra_gpu && pNvmlDeviceGetUtilizationRates)
+                pNvmlDeviceGetUtilizationRates(dev, &util);
+            if (use_tegra_gpu) {
                 int tutil = read_tegra_gpu_util();
                 if (tutil >= 0) util.gpu = (unsigned int)tutil;
             }
             g->util_gpu = util.gpu;
 
-            int prom_temp_ok = (pNvmlDeviceGetTemperature &&
-                                pNvmlDeviceGetTemperature(dev, NVML_TEMPERATURE_GPU, &g->temp) == NVML_SUCCESS &&
-                                g->temp > 0);
-            if (!prom_temp_ok && tegra_gpu_therm_zone >= 0) {
+            if (!use_tegra_gpu && pNvmlDeviceGetTemperature)
+                pNvmlDeviceGetTemperature(dev, NVML_TEMPERATURE_GPU, &g->temp);
+            if (use_tegra_gpu && tegra_gpu_therm_zone >= 0) {
                 int ttemp = read_tegra_gpu_temp();
                 if (ttemp > 0) g->temp = (unsigned int)ttemp;
             }
@@ -1603,25 +1601,21 @@ static void draw_screen(void) {
             pNvmlDeviceGetName(dev, name, sizeof(name));
 
             nvmlUtilization_t util = {0};
-            int util_ok = (pNvmlDeviceGetUtilizationRates &&
-                           pNvmlDeviceGetUtilizationRates(dev, &util) == NVML_SUCCESS &&
-                           util.gpu > 0);
-            /* Tegra sysfs fallback for GPU utilization */
-            if (!util_ok && tegra_gpu_available) {
+            if (!use_tegra_gpu && pNvmlDeviceGetUtilizationRates)
+                pNvmlDeviceGetUtilizationRates(dev, &util);
+            if (use_tegra_gpu) {
                 int tutil = read_tegra_gpu_util();
-                if (tutil >= 0) { util.gpu = (unsigned int)tutil; util_ok = 1; }
+                if (tutil >= 0) util.gpu = (unsigned int)tutil;
             }
             gpu_util_sum += (double)util.gpu;
             gpu_util_n++;
 
             unsigned int temp = 0;
-            int temp_ok = (pNvmlDeviceGetTemperature &&
-                           pNvmlDeviceGetTemperature(dev, NVML_TEMPERATURE_GPU, &temp) == NVML_SUCCESS &&
-                           temp > 0);
-            /* Tegra sysfs fallback for GPU temperature */
-            if (!temp_ok && tegra_gpu_therm_zone >= 0) {
+            if (!use_tegra_gpu && pNvmlDeviceGetTemperature)
+                pNvmlDeviceGetTemperature(dev, NVML_TEMPERATURE_GPU, &temp);
+            if (use_tegra_gpu && tegra_gpu_therm_zone >= 0) {
                 int ttemp = read_tegra_gpu_temp();
-                if (ttemp > 0) { temp = (unsigned int)ttemp; temp_ok = 1; }
+                if (ttemp > 0) temp = (unsigned int)ttemp;
             }
 
             unsigned int power_mw = 0;
@@ -1905,6 +1899,9 @@ int main(int argc, char *argv[]) {
 
     /* Detect Tegra GPU sysfs (Jetson fallback) */
     detect_tegra_gpu();
+    /* On Tegra/Jetson, NVML returns SUCCESS but zeros for util/temp — prefer sysfs */
+    if (tegra_gpu_available)
+        use_tegra_gpu = 1;
 
     /* Initial CPU tick read */
     read_cpu_ticks(prev_ticks, &num_cpus);
