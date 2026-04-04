@@ -496,17 +496,32 @@ static int read_cpu_freq_mhz(void) {
 /* ── Tegra GPU sysfs fallback (Jetson Orin / Nano / NX / AGX) ──────── */
 
 static int tegra_gpu_available = 0;
+static char tegra_gpu_load_path[256] = "";
 static int tegra_gpu_therm_zone = -1; /* thermal zone index for GPU-therm */
 
 static void detect_tegra_gpu(void) {
-    FILE *f = fopen("/sys/devices/gpu.0/load", "r");
-    if (f) { tegra_gpu_available = 1; fclose(f); }
+    /* Try known Tegra GPU load paths */
+    const char *gpu_paths[] = {
+        "/sys/devices/gpu.0/load",
+        "/sys/devices/platform/bus@0/17000000.gpu/load",
+        "/sys/devices/platform/17000000.gpu/load",
+        NULL
+    };
+    for (int i = 0; gpu_paths[i]; i++) {
+        FILE *f = fopen(gpu_paths[i], "r");
+        if (f) {
+            tegra_gpu_available = 1;
+            snprintf(tegra_gpu_load_path, sizeof(tegra_gpu_load_path), "%s", gpu_paths[i]);
+            fclose(f);
+            break;
+        }
+    }
 
     /* Find GPU thermal zone */
     for (int i = 0; i < 20; i++) {
         char path[128], type[64] = "";
         snprintf(path, sizeof(path), "/sys/class/thermal/thermal_zone%d/type", i);
-        f = fopen(path, "r");
+        FILE *f = fopen(path, "r");
         if (!f) break;
         if (fgets(type, sizeof(type), f)) {
             type[strcspn(type, "\n\r")] = '\0';
@@ -521,7 +536,7 @@ static void detect_tegra_gpu(void) {
 }
 
 static int read_tegra_gpu_util(void) {
-    FILE *f = fopen("/sys/devices/gpu.0/load", "r");
+    FILE *f = fopen(tegra_gpu_load_path, "r");
     if (!f) return -1;
     int load = 0;
     (void)!fscanf(f, "%d", &load);
