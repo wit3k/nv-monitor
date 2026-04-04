@@ -26,9 +26,9 @@ echo "CPUs: $(nproc)"
 free -h | head -2
 echo ""
 echo "Binary sizes:"
-ls -lh "$NV_MONITOR" 2>/dev/null | awk '{print "  nv-monitor:", $5}'
-ls -lh $(which top 2>/dev/null) 2>/dev/null | awk '{print "  top:       ", $5}'
-ls -lh $(which htop 2>/dev/null) 2>/dev/null | awk '{print "  htop:      ", $5}'
+[ -x "$NV_MONITOR" ] && ls -lh "$NV_MONITOR" | awk '{print "  nv-monitor:", $5}'
+command -v top &>/dev/null && ls -lh "$(which top)" | awk '{print "  top:       ", $5}'
+command -v htop &>/dev/null && ls -lh "$(which htop)" | awk '{print "  htop:      ", $5}' || echo "  htop:       (not installed)"
 echo ""
 
 measure() {
@@ -69,7 +69,9 @@ if command -v top &>/dev/null; then
 fi
 
 if command -v htop &>/dev/null; then
-    measure "htop" script -qc "htop -d 10" /dev/null
+    echo ""
+    echo "Note: htop requires a real terminal for CPU measurement."
+    echo "      Binary size shown above. Run 'htop' in a terminal and check 'ps' for live stats."
 fi
 
 echo ""
