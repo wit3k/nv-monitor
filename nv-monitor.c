@@ -525,7 +525,8 @@ static void detect_tegra_gpu(void) {
         if (!f) break;
         if (fgets(type, sizeof(type), f)) {
             type[strcspn(type, "\n\r")] = '\0';
-            if (strcmp(type, "GPU-therm") == 0) {
+            if (strcasecmp(type, "GPU-therm") == 0 ||
+                strcasecmp(type, "gpu-thermal") == 0) {
                 tegra_gpu_therm_zone = i;
                 fclose(f);
                 break;
