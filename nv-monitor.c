@@ -611,14 +611,30 @@ static int scan_tegra_gpu_procs(GpuProc *procs, int max_procs) {
         int found = 0;
         struct dirent *fent;
         while ((fent = readdir(fds))) {
-            char fd_path[128];
-            struct stat fd_stat;
+            char fd_path[128], link_target[256];
             snprintf(fd_path, sizeof(fd_path), "/proc/%u/fd/%s", pid, fent->d_name);
-            if (stat(fd_path, &fd_stat) == 0 &&
+
+            /* Check 1: device file matches GPU device ID */
+            struct stat fd_stat;
+            if (tegra_gpu_dev && stat(fd_path, &fd_stat) == 0 &&
                 S_ISCHR(fd_stat.st_mode) &&
                 fd_stat.st_rdev == tegra_gpu_dev) {
                 found = 1;
                 break;
+            }
+
+            /* Check 2: symlink target contains nvhost GPU or DRI render node */
+            int llen = readlink(fd_path, link_target, sizeof(link_target) - 1);
+            if (llen > 0) {
+                link_target[llen] = '\0';
+                if (strstr(link_target, "nvhost") && strstr(link_target, "gpu")) {
+                    found = 1;
+                    break;
+                }
+                if (strstr(link_target, "/dev/dri/render")) {
+                    found = 1;
+                    break;
+                }
             }
         }
         closedir(fds);
