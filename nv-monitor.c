@@ -585,8 +585,9 @@ static void detect_tegra_gpu_dev(void) {
 }
 
 static int scan_tegra_gpu_procs(GpuProc *procs, int max_procs) {
-    if (!tegra_gpu_dev) return 0;
+    if (!tegra_gpu_dev && !use_tegra_gpu) return 0;
     int n = 0;
+    pid_t my_pid = getpid();
 
     DIR *proc_dir = opendir("/proc");
     if (!proc_dir) return 0;
@@ -596,6 +597,7 @@ static int scan_tegra_gpu_procs(GpuProc *procs, int max_procs) {
         /* Skip non-numeric entries */
         unsigned int pid = 0;
         if (sscanf(pent->d_name, "%u", &pid) != 1 || pid == 0) continue;
+        if ((pid_t)pid == my_pid) continue; /* skip ourselves */
 
         /* Check if this PID already found */
         int dup = 0;
@@ -2100,6 +2102,8 @@ int main(int argc, char *argv[]) {
         while (!g_quit) {
             compute_cpu_usage();
             read_rdma_ports();
+            /* Force full repaint to recover from terminal corruption */
+            clearok(stdscr, TRUE);
             draw_screen();
 
             /* Log at log_interval_ms if logging enabled */
